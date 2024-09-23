@@ -1,0 +1,17 @@
+{
+  "name": "AuthManager",
+  "references": [
+    "UnityEngine",
+    "UnityEditor",
+    "Google.Play.Games",
+    "AppleAuth"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

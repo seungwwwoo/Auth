@@ -1,8 +1,8 @@
 {
-  "name": "com.carpe.manager",
+  "name": "com.carpe.authmanager",
   "version": "0.0.1",
-  "displayName": "CoreManager",
-  "description": "core singleton manager",
+  "displayName": "AuthManager",
+  "description": "AuthManager",
   "unity": "2022.3",
   "documentationUrl": "https://example.com/",
   "changelogUrl": "https://example.com/changelog.html",
