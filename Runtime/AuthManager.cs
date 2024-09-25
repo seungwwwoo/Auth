@@ -1,9 +1,6 @@
-using System.Threading.Tasks;
-using System.Text;
 using UnityEngine;
 using Unity.Services.Core;
-using Unity.Services.Authentication;
-
+// using Unity.Services.Authentication;
 // Live2D
 
 #if UNITY_ANDROID
@@ -16,16 +13,31 @@ using AppleAuth;
 using AppleAuth.Enums;
 using AppleAuth.Interfaces;
 using AppleAuth.Native;
+using System;
+using System.Text;
+using System.Threading.Tasks;
+using Unity.Services.Authentication;
+using UnityEngine.Events;
+using UnityEngine.Serialization;
+
+// using AuthenticationException = System.Security.Authentication.AuthenticationException;
 
 
-namespace AuthManager
+namespace Pickiss
 {
     public class AuthManager : MonoBehaviour
     {
-        public string PlayerExternalIds;
+        [FormerlySerializedAs("PlayerExternalIds")] public string playerExternalIds;
         public bool hasUnityIdentifier = false; // 유니티 식별자 받아왔음!
         public bool doneUnityAuthentication = false; // 유니티 인증 통신 완료  (실패시에도 true)
+        
+        # region SystemManager에서 받은 Action
 
+        private Action<string> _onErrorPopup;
+        private Action _onRefresh;
+        private Action<UnityAction> _onConfirmPopup;
+        #endregion
+        
         private static AuthManager _instance;
 
         public static AuthManager Instance
@@ -61,26 +73,20 @@ namespace AuthManager
             InitGooglePlayService();
         }
 
-        public async void Init()
+        public async Task Init(
+            Action<string> onErrorPopup,
+            Action onRefresh,
+            Action<UnityAction> onConfirmPopup
+            )
         {
-            await UnityServices.InitializeAsync();
-            Debug.Log("#### UGS UnityServices :: " + UnityServices.State);
-            Debug.Log($"UGS Cached Session Token Exist: {AuthenticationService.Instance.SessionTokenExists}");
+            _onErrorPopup = onErrorPopup;
+            _onRefresh = onRefresh;
+            _onConfirmPopup = onConfirmPopup;
 
-            if (UnityServices.State == ServicesInitializationState.Uninitialized)
-            {
-                SystemManager.ShowSimpleAlert("Can't retrieve access identifier");
-                ;
-                return;
-            }
-
-            int userLoginCheck = PlayerPrefs.GetInt(CommonConst.KEY_USER_LOGIN, 0);
-
-            // Session Expired 
-            if (userLoginCheck > 0 && !AuthenticationService.Instance.SessionTokenExists)
-            {
-                // NetworkLoader.main.ReportRequestError("UGS Session Token expire", "token expire");
-            }
+#if UNITY_ANDROID
+            PlayGamesPlatform.Activate();
+#endif
+            
 
             SetupUnityGameServiceEvents();
             await SignInUnityGameServiceAnonymouslyAsync();
@@ -119,28 +125,18 @@ namespace AuthManager
         }
 
 
-        /// <summary>
-        /// 유니티 게임서비스 Anonymous 로그인 
-        /// </summary>
-        /// <returns></returns>
-        async public Task SignInUnityGameServiceAnonymouslyAsync()
+        private async Task SignInUnityGameServiceAnonymouslyAsync()
         {
             try
             {
                 await AuthenticationService.Instance.SignInAnonymouslyAsync();
-                Debug.Log("UGS Sign in anonymously succeeded!");
+                PlayerPrefs.SetInt("userLoginExists", 1); // 로그인을 한번이라도 했으면  1로 적용한다. 
 
-                // Shows how to get the playerID
-                Debug.Log($"UGS PlayerID: {AuthenticationService.Instance.PlayerId}");
-                // hasUnityIdentifier = true;
-
-                PlayerPrefs.SetInt(CommonConst.KEY_USER_LOGIN, 1); // 로그인을 한번이라도 했으면  1로 적용한다. 
-
-                GetPlayerInfoAsync();
+                await GetPlayerInfoAsync();
                 hasUnityIdentifier = true;
                 doneUnityAuthentication = true;
             }
-            catch (AuthenticationException ex)
+            catch (Unity.Services.Authentication.AuthenticationException ex)
             {
                 // Compare error code to AuthenticationErrorCodes
                 // Notify the player with the proper error message
@@ -151,24 +147,18 @@ namespace AuthManager
                 if (!string.IsNullOrEmpty(ex.Message) && ex.Message.Contains("session token is not valid"))
                 {
                     AuthenticationService.Instance.ClearSessionToken();
-                    SignInUnityGameServiceAnonymouslyAsync();
+                    await SignInUnityGameServiceAnonymouslyAsync();
                     return;
                 }
-
-                SystemManager.ShowSimpleAlert("AuthenticationException : " + ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException");
+                
+                _onErrorPopup(ex.Message);
             }
             catch (RequestFailedException ex)
             {
-                // Compare error code to CommonErrorCodes
-                // Notify the player with the proper error message
-                Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert("RequestFailedException : " + ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException");
-
                 AuthenticationService.Instance.ClearSessionToken();
                 hasUnityIdentifier = false;
                 doneUnityAuthentication = true;
+                _onErrorPopup(ex.Message);
             }
         }
 
@@ -197,6 +187,8 @@ namespace AuthManager
             {
                 InitAppleSignIn();
             }
+            
+            Debug.Assert(_onErrorPopup != null, "_onErrorPopup != null");
 
             // Set the login arguments
             AppleAuthLoginArgs loginArgs = new(LoginOptions.IncludeEmail | LoginOptions.IncludeFullName);
@@ -219,13 +211,13 @@ namespace AuthManager
                     else
                     {
                         Debug.Log("Sign-in with Apple error. Message: appleIDCredential is null");
-                        SystemManager.ShowSimpleAlert("Sign-in with Apple error. Message: appleIDCredential is null");
+                        _onErrorPopup("Sign-in with Apple error. Message: appleIDCredential is null");
                     }
                 },
                 error =>
                 {
                     Debug.Log("Sign-in with Apple error. Message: " + error);
-                    SystemManager.ShowSimpleAlert("Sign-in with Apple error. Message: " + error);
+                    _onErrorPopup("Sign-in with Apple error. Message: " + error);
                 }
             );
         } // ? end of apple login
@@ -238,32 +230,36 @@ namespace AuthManager
                 Debug.Log("Link is successful.");
 
                 await GetPlayerInfoAsync();
+                _onRefresh();
                 // PlayerExternalIds += "apple.com";
-                PopupAccount.RefreshPopupAccount?.Invoke();
+                // PopupAccount.RefreshPopupAccount?.Invoke();
             }
             catch (AuthenticationException ex) when (ex.ErrorCode == AuthenticationErrorCodes.AccountAlreadyLinked)
             {
                 // Prompt the player with an error message.
                 Debug.LogError("This user is already linked with another account. Log in instead.");
-                SystemManager.CloseCurrentPopup();
-                SystemManager.ShowConfirmPopup(SystemManager.GetLocalizedText("6111"),
-                    ChangeUnityGameServiceAccountAndApple, SystemManager.ShowAccountLinkCancelAlert);
+                _onConfirmPopup(ChangeUnityGameServiceAccountAndApple);
+                // SystemManager.CloseCurrentPopup();
+                // SystemManager.ShowConfirmPopup(SystemManager.GetLocalizedText("6111"),
+                //     ChangeUnityGameServiceAccountAndApple, SystemManager.ShowAccountLinkCancelAlert);
             }
             catch (AuthenticationException ex)
             {
                 // Compare error code to AuthenticationErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_link");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_link");
             }
             catch (RequestFailedException ex)
             {
                 // Compare error code to CommonErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_link");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_link");
             }
         }
 
@@ -302,10 +298,9 @@ namespace AuthManager
                 else
                 {
                     googlePlayGamesError = "Failed to retrieve Google play games authorization code ";
-                    SystemManager.ShowSimpleAlert(googlePlayGamesError);
                     Debug.Log("UGS Login Unsuccessful");
-
-                    NetworkLoader.main.ReportRequestError(Application.version, "Failed GooglePlay Login");
+                    
+                    _onErrorPopup("Failed GooglePlay Login");
                 }
             });
 #endif
@@ -320,7 +315,7 @@ namespace AuthManager
             else
             {
                 googlePlayGamesError = "Failed to retrieve Google authorization code [" + message + "]";
-                SystemManager.ShowSimpleAlert(googlePlayGamesError);
+                _onErrorPopup(googlePlayGamesError);
                 Debug.Log("UGS Login Unsuccessful");
             }
         }
@@ -341,24 +336,23 @@ namespace AuthManager
 
                 // 정상적으로 연결됨
                 // PopupAccount 리프레시 
-                PopupAccount.RefreshPopupAccount?.Invoke();
+                _onRefresh();
+                // PopupAccount.RefreshPopupAccount?.Invoke();
             }
             catch (AuthenticationException ex) when (ex.ErrorCode == AuthenticationErrorCodes.AccountAlreadyLinked)
             {
                 // Prompt the player with an error message.
                 Debug.LogError("UGS This user is already linked with another account. Log in instead.");
 
+                
                 // 연결된 계정이 있으면 알려줘야한다. 
                 // 현재 계정 모달을 닫고 컨펌 모달을 연다. 
-                SystemManager.CloseCurrentPopup();
+                // SystemManager.CloseCurrentPopup();
 
 
-                // 기존 아이디가 있다고 알린다.
-                // 새로운 아이디로 로그인할까요? 라고 물어본다. 
-                // 6111
-                // positive에 로그인 처리 전달 
-                SystemManager.ShowConfirmPopup(SystemManager.GetLocalizedText("6111"),
-                    ChangeUnityGameServiceAccountAndGooglePlay, SystemManager.ShowAccountLinkCancelAlert);
+                _onConfirmPopup(ChangeUnityGameServiceAccountAndGooglePlay);
+                // SystemManager.ShowConfirmPopup(SystemManager.GetLocalizedText("6111"),
+                    // ChangeUnityGameServiceAccountAndGooglePlay, SystemManager.ShowAccountLinkCancelAlert);
             }
 
             catch (AuthenticationException ex)
@@ -366,16 +360,18 @@ namespace AuthManager
                 // Compare error code to AuthenticationErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_link");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_link");
             }
             catch (RequestFailedException ex)
             {
                 // Compare error code to CommonErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_link");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_link");
             }
         }
 
@@ -438,23 +434,26 @@ namespace AuthManager
                 await GetPlayerInfoAsync();
 
                 // 성공했으면 씬 다시 로드시키면서 정보 리프레시
-                SystemManager.main.ChangeAccount();
+                // SystemManager.main.ChangeAccount();
+                _onRefresh();
             }
             catch (AuthenticationException ex)
             {
                 // Compare error code to AuthenticationErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_google");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_google");
             }
             catch (RequestFailedException ex)
             {
                 // Compare error code to CommonErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_google");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_google");
             }
         }
 
@@ -464,7 +463,7 @@ namespace AuthManager
         /// </summary>
         /// <param name="idToken"></param>
         /// <returns></returns>
-        async public Task SignInWithAppleAsync(string idToken)
+        private async Task SignInWithAppleAsync(string idToken)
         {
             try
             {
@@ -478,44 +477,50 @@ namespace AuthManager
                 await GetPlayerInfoAsync();
 
                 // 성공했으면 씬 다시 로드시키면서 정보 리프레시
-                SystemManager.main.ChangeAccount();
+                _onRefresh();
+                
+                // SystemManager.main.ChangeAccount();
             }
             catch (AuthenticationException ex)
             {
                 // Compare error code to AuthenticationErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_apple");
+                _onErrorPopup(ex.Message);
+
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "AuthenticationException_apple");
             }
             catch (RequestFailedException ex)
             {
                 // Compare error code to CommonErrorCodes
                 // Notify the player with the proper error message
                 Debug.LogException(ex);
-                SystemManager.ShowSimpleAlert(ex.Message);
-                NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_apple");
+                _onErrorPopup(ex.Message);
+                // SystemManager.ShowSimpleAlert(ex.Message);
+                // NetworkLoader.main.ReportRequestError(ex.Message, "RequestFailedException_apple");
             }
         }
 
         private string GetExternalIds(PlayerInfo playerInfo)
         {
             StringBuilder sb = new();
-            if (playerInfo.Identities != null)
+            if (playerInfo.Identities == null)
             {
-                foreach (var id in playerInfo.Identities)
-                    sb.Append(id.TypeId + " ");
-
-                return sb.ToString();
+                return string.Empty;
             }
 
-            return string.Empty;
+            foreach (var id in playerInfo.Identities)
+                sb.Append(id.TypeId + " ");
+
+            return sb.ToString();
+
         }
 
         private async Task GetPlayerInfoAsync()
         {
             PlayerInfo playerInfo = await AuthenticationService.Instance.GetPlayerInfoAsync();
-            PlayerExternalIds = GetExternalIds(playerInfo);
+            playerExternalIds = GetExternalIds(playerInfo);
         }
     }
 }

@@ -3,6 +3,8 @@
   "references": [
     "UnityEngine",
     "UnityEditor",
+    "Unity.Services.Core",
+    "Unity.Services.Authentication",
     "Google.Play.Games",
     "AppleAuth"
   ],
